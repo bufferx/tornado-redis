@@ -9,6 +9,8 @@ import weakref
 import datetime
 import time as mod_time
 
+from redis.client import parse_sentinel
+
 from tornado.ioloop import IOLoop
 from tornado import gen
 from tornado import stack_context
@@ -145,6 +147,15 @@ def reply_ttl(r, *args, **kwargs):
     return r != -1 and r or None
 
 
+def reply_sentinel(r, *args, **kwargs):
+    parse = kwargs['parse']
+
+    if parse == 'SENTINEL_ADDR_PORT':
+        r = None if not r else r
+
+    return parse_sentinel(r, **kwargs)
+
+
 def to_list(source):
     if isinstance(source, str):
         return [source]
@@ -199,6 +210,7 @@ REPLY_MAP = dict_merge(
      'TTL': reply_ttl,
      'INFO': reply_info,
      'MULTI_PART': make_reply_assert_msg('QUEUED'),
+     'SENTINEL': reply_sentinel,
      'TIME': lambda x: (int(x[0]), int(x[1]))}
 )
 
@@ -359,6 +371,9 @@ class Client(object):
         try:
             res = REPLY_MAP[cmd_line.cmd](data,
                                           *cmd_line.args,
+                                          **cmd_line.kwargs)
+        except TypeError as e:
+            res = REPLY_MAP[cmd_line.cmd](data,
                                           **cmd_line.kwargs)
         except Exception as e:
             raise ResponseError(
@@ -1175,6 +1190,54 @@ class Client(object):
     def script_load(self, script, callback=None):
         # not yet implemented in the redis protocol
         self.execute_command('SCRIPT LOAD', script, callback=callback)
+
+    ### SENTINEL COMMANDS
+    def sentinel(self, *args, **kwargs):
+        "Redis Sentinel's SENTINEL command"
+        if args[0] in ['MASTERS', 'SLAVES', 'SENTINELS']:
+            parse = 'SENTINEL_INFO'
+        else:
+            parse = 'SENTINEL'
+
+        kwargs['parse'] = parse
+
+        return self.execute_command('SENTINEL',
+                                    *args,
+                                    **kwargs
+                                    )
+
+    def sentinel_masters(self, callback=None):
+        "Returns a dictionary containing the master's state."
+        return self.execute_command('SENTINEL',
+                                    'MASTERS',
+                                    parse='SENTINEL_INFO_MASTERS',
+                                    callback=callback,
+                                    )
+
+    def sentinel_slaves(self, callback=None):
+        "Returns a list of slaves for ``service_name``"
+        return self.execute_command('SENTINEL',
+                                    'SLAVES',
+                                    parse='SENTINEL_INFO',
+                                    callback=callback,
+                                    )
+
+    def sentinel_sentinels(self, callback=None):
+        "Returns a list of sentinels for ``service_name``"
+        return self.execute_command('SENTINEL',
+                                    'SENTINELS',
+                                    parse='SENTINEL_INFO',
+                                    callback=callback,
+                                    )
+
+    def sentinel_get_master_addr_by_name(self, service_name, callback=None):
+        "Returns a (host, port) pair for the given ``service_name``"
+        return self.execute_command('SENTINEL',
+                                    'GET-MASTER-ADDR-BY-NAME',
+                                    service_name,
+                                    parse='SENTINEL_ADDR_PORT',
+                                    callback=callback,
+                                    )
 
 
 class Pipeline(Client):
